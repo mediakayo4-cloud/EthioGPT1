@@ -1,0 +1,6 @@
+{
+  "name": "EthioGPT",
+  "description": "Your Ethiopian AI Assistant — Multilingual AI workspace supporting Afaan Oromo, Amharic, Tigrinya, English, and Somali.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

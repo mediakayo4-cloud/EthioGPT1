@@ -1,0 +1,287 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSupportedLanguage(lang) {
+      return lang in ['om', 'am', 'ti', 'en', 'so'];
+    }
+
+    function isValidTheme(theme) {
+      return theme in ['light', 'dark'];
+    }
+
+    function isValidVoiceMode(mode) {
+      return mode in ['auto', 'ai', 'browser'];
+    }
+
+    function isValidPhotoDataUrl(data) {
+      return !('photoDataUrl' in data) || (
+        data.photoDataUrl is string
+        && data.photoDataUrl.size() <= 200000
+        && (data.photoDataUrl == '' || data.photoDataUrl.matches('^data:image/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$'))
+      );
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'displayName',
+          'username',
+          'email',
+          'bio',
+          'country',
+          'preferredLanguage',
+          'theme',
+          'voiceMode',
+          'saveHistory',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'displayName',
+          'username',
+          'email',
+          'photoDataUrl',
+          'bio',
+          'country',
+          'preferredLanguage',
+          'theme',
+          'voiceMode',
+          'saveHistory',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.uid == userId
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 100
+        && data.username is string
+        && data.username.size() >= 3
+        && data.username.size() <= 30
+        && data.username.matches('^[a-zA-Z0-9_]+$')
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 254
+        && isValidPhotoDataUrl(data)
+        && data.bio is string
+        && data.bio.size() <= 300
+        && data.country is string
+        && data.country.size() <= 80
+        && isSupportedLanguage(data.preferredLanguage)
+        && isValidTheme(data.theme)
+        && isValidVoiceMode(data.voiceMode)
+        && data.saveHistory is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidChatSession(data, userId, chatId) {
+      return data.keys().hasAll([
+          'id',
+          'userId',
+          'title',
+          'language',
+          'messageCount',
+          'lastMessagePreview',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'userId',
+          'title',
+          'language',
+          'messageCount',
+          'lastMessagePreview',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == chatId
+        && isValidId(data.userId)
+        && data.userId == request.auth.uid
+        && data.userId == userId
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 160
+        && isSupportedLanguage(data.language)
+        && data.messageCount is int
+        && data.messageCount >= 0
+        && data.messageCount <= 10000
+        && data.lastMessagePreview is string
+        && data.lastMessagePreview.size() <= 300
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAttachmentNames(data) {
+      return !('attachmentNames' in data) || (
+        data.attachmentNames is list
+        && data.attachmentNames.size() <= 5
+        && (data.attachmentNames.size() == 0 || (data.attachmentNames[0] is string && data.attachmentNames[0].size() <= 200))
+      );
+    }
+
+    function isValidChatMessage(data, userId, chatId, messageId) {
+      return data.keys().hasAll(['id', 'chatId', 'userId', 'role', 'content', 'language', 'createdAt'])
+        && data.keys().hasOnly(['id', 'chatId', 'userId', 'role', 'content', 'language', 'attachmentNames', 'createdAt'])
+        && isValidId(data.id)
+        && data.id == messageId
+        && isValidId(data.chatId)
+        && data.chatId == chatId
+        && isValidId(data.userId)
+        && data.userId == request.auth.uid
+        && data.userId == userId
+        && data.role in ['user', 'assistant']
+        && data.content is string
+        && data.content.size() <= 100000
+        && isSupportedLanguage(data.language)
+        && isValidAttachmentNames(data)
+        && data.createdAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName',
+          'username',
+          'email',
+          'photoDataUrl',
+          'bio',
+          'country',
+          'preferredLanguage',
+          'theme',
+          'voiceMode',
+          'saveHistory',
+          'updatedAt'
+        ]);
+
+      allow delete: if isSignedIn()
+        && isValidId(userId)
+        && request.auth.uid == userId;
+
+      match /chats/{chatId} {
+        allow get: if isSignedIn()
+          && isValidId(userId)
+          && isValidId(chatId)
+          && request.auth.uid == userId
+          && existing().userId == request.auth.uid;
+
+        allow list: if isSignedIn()
+          && request.auth.uid == userId
+          && resource.data.userId == request.auth.uid;
+
+        allow create: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(chatId)
+          && request.auth.uid == userId
+          && isValidChatSession(incoming(), userId, chatId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && (
+            exists(/databases/$(database)/documents/users/$(userId))
+            || existsAfter(/databases/$(database)/documents/users/$(userId))
+          );
+
+        allow update: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(chatId)
+          && request.auth.uid == userId
+          && existing().userId == request.auth.uid
+          && isValidChatSession(incoming(), userId, chatId)
+          && incoming().id == existing().id
+          && incoming().userId == existing().userId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'language', 'messageCount', 'lastMessagePreview', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['title', 'updatedAt'])
+          );
+
+        allow delete: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(chatId)
+          && request.auth.uid == userId
+          && existing().userId == request.auth.uid;
+
+        match /messages/{messageId} {
+          allow get: if isSignedIn()
+            && isValidId(userId)
+            && isValidId(chatId)
+            && isValidId(messageId)
+            && request.auth.uid == userId
+            && existing().userId == request.auth.uid;
+
+          allow list: if isSignedIn()
+            && request.auth.uid == userId
+            && resource.data.userId == request.auth.uid;
+
+          allow create: if isVerifiedUser()
+            && isValidId(userId)
+            && isValidId(chatId)
+            && isValidId(messageId)
+            && request.auth.uid == userId
+            && isValidChatMessage(incoming(), userId, chatId, messageId)
+            && incoming().createdAt == request.time
+            && (
+              exists(/databases/$(database)/documents/users/$(userId)/chats/$(chatId))
+              || existsAfter(/databases/$(database)/documents/users/$(userId)/chats/$(chatId))
+            );
+
+          allow update: if false;
+
+          allow delete: if isVerifiedUser()
+            && isValidId(userId)
+            && isValidId(chatId)
+            && isValidId(messageId)
+            && request.auth.uid == userId
+            && existing().userId == request.auth.uid;
+        }
+      }
+    }
+  }
+}

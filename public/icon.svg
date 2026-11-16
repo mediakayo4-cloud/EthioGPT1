@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#0A2E1F"/>
+  <rect x="24" y="24" width="464" height="464" rx="92" stroke="#D97706" stroke-opacity="0.35" stroke-width="4"/>
+  <!-- Outer geometric Ethiopian meskel-inspired lattice frame -->
+  <path d="M256 84L316 144H396V224L456 284L396 344V424H316L256 484L196 424H116V344L56 284L116 224V144H196L256 84Z" transform="translate(0 -28)" stroke="#F59E0B" stroke-width="14" stroke-linejoin="round"/>
+  <!-- Inner emerald diamond -->
+  <path d="M256 132L356 256L256 380L156 256L256 132Z" fill="#10B981" fill-opacity="0.18" stroke="#34D399" stroke-width="12" stroke-linejoin="round"/>
+  <!-- Central AI star & knowledge core -->
+  <path d="M256 168L278 234L344 256L278 278L256 344L234 278L168 256L234 234L256 168Z" fill="#FBBF24"/>
+  <circle cx="256" cy="256" r="18" fill="#0A2E1F"/>
+</svg>

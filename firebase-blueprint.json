@@ -1,0 +1,223 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user account profile, avatar, biography, and preferences for EthioGPT.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth user ID matching the document owner."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "User full display name."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 30,
+          "pattern": "^[a-zA-Z0-9_]+$",
+          "description": "Unique-style handle chosen by the user."
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "Verified user email address (PII, owner-only read)."
+        },
+        "photoDataUrl": {
+          "type": "string",
+          "maxLength": 200000,
+          "description": "Optional compressed avatar image data URL."
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Short personal biography (About Me)."
+        },
+        "country": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "User country or location."
+        },
+        "preferredLanguage": {
+          "type": "string",
+          "enum": ["om", "am", "ti", "en", "so"],
+          "description": "Selected EthioGPT interface and AI response language."
+        },
+        "theme": {
+          "type": "string",
+          "enum": ["light", "dark"],
+          "description": "Preferred UI color theme."
+        },
+        "voiceMode": {
+          "type": "string",
+          "enum": ["auto", "ai", "browser"],
+          "description": "Preferred speech recognition and TTS engine."
+        },
+        "saveHistory": {
+          "type": "boolean",
+          "description": "Privacy toggle controlling whether conversations are saved."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when profile was last updated."
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "username",
+        "email",
+        "bio",
+        "country",
+        "preferredLanguage",
+        "theme",
+        "voiceMode",
+        "saveHistory",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ChatSession": {
+      "title": "ChatSession",
+      "description": "A saved EthioGPT conversation thread belonging to a specific user.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique conversation identifier."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase UID."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "Conversation title."
+        },
+        "language": {
+          "type": "string",
+          "enum": ["om", "am", "ti", "en", "so"],
+          "description": "Primary language used in this conversation."
+        },
+        "messageCount": {
+          "type": "integer",
+          "description": "Number of messages in this chat."
+        },
+        "lastMessagePreview": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Short preview of the latest message."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when chat was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when chat was last updated."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "title",
+        "language",
+        "messageCount",
+        "lastMessagePreview",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "An individual user or assistant message inside a ChatSession.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique message identifier."
+        },
+        "chatId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Parent ChatSession identifier."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase UID."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "assistant"],
+          "description": "Message sender role."
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 100000,
+          "description": "Markdown message content."
+        },
+        "language": {
+          "type": "string",
+          "enum": ["om", "am", "ti", "en", "so"],
+          "description": "Language active when the message was generated."
+        },
+        "attachmentNames": {
+          "type": "array",
+          "description": "Bounded list of attached image/document filenames (max 5)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when message was created."
+        }
+      },
+      "required": ["id", "chatId", "userId", "role", "content", "language", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-isolated user profiles and preferences."
+    },
+    "/users/{userId}/chats/{chatId}": {
+      "schema": { "$ref": "#/entities/ChatSession" },
+      "description": "Saved conversation threads owned by a user."
+    },
+    "/users/{userId}/chats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Messages belonging to a user's saved conversation."
+    }
+  }
+}
