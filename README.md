@@ -10,7 +10,7 @@ EthioGPT is intentionally engineered so you can host and run it online **without
 
 - **GitHub Free**: Hosts your source code (free public or private repository, no card required).
 - **Vercel Hobby (Free)**: Hosts both the React frontend and the `/api/*` serverless backend over HTTPS with a free `.vercel.app` domain (no credit card required when signing up with GitHub).
-- **Google AI Studio Free API Key**: Uses `gemini-4-hydrogen` via a free Google AI Studio API key (`GEMINI_API_KEY`) — no Google Cloud billing account required.
+- **Google AI Studio Free API Key**: Uses `gemini-2.5-flash` via a free Google AI Studio API key (`GEMINI_API_KEY`) — no Google Cloud billing account required.
 - **Firebase Spark (Free) Plan**: Powers Google Sign-In, Email/Password auth, and Firestore chat history sync on the free tier.
 
 ---
@@ -34,8 +34,8 @@ Add these under **Vercel -> Project Settings -> Environment Variables**:
 | Variable | Required | Value / Notes |
 | --- | --- | --- |
 | `GEMINI_API_KEY` | **Yes** | Your free API key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey). Kept strictly on the server (`/api/*`). |
-| `GEMINI_MODEL` | Optional | Defaults to `gemini-4-hydrogen`. Only set if you want to switch models later. |
-| `GEMINI_TRANSCRIBE_MODEL` | Optional | Defaults to `GEMINI_MODEL` (`gemini-4-hydrogen`). |
+| `GEMINI_MODEL` | Optional | Defaults to `gemini-2.5-flash`. Only set if you want to switch to another supported GA Gemini model. |
+| `GEMINI_TRANSCRIBE_MODEL` | Optional | Defaults to `gemini-2.5-flash`. |
 
 > **Important Security Notes:**
 > - **Never** prefix your Gemini key with `VITE_` and never put it inside `src/` or `index.html`.

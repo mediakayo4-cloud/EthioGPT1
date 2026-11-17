@@ -21,8 +21,10 @@ import {
   doc,
   getDoc,
   getDocs,
+  query,
   serverTimestamp,
   setDoc,
+  where,
   writeBatch,
   type DocumentReference,
 } from 'firebase/firestore';
@@ -165,6 +167,12 @@ function mapFirebaseAuthError(error: unknown): string {
       return 'Password must be at least 6 characters long.';
     case 'auth/too-many-requests':
       return 'Too many attempts. Please wait a few minutes and try again.';
+    case 'auth/unauthorized-domain':
+      return 'This domain is not authorized for Firebase Authentication. Add your website domain in Firebase Console → Authentication → Settings → Authorized domains.';
+    case 'auth/network-request-failed':
+      return 'Network error while contacting Firebase Authentication. Check your internet connection and try again.';
+    case 'auth/user-disabled':
+      return 'This account has been disabled.';
     case 'auth/requires-recent-login':
       return 'For security, please confirm your current password or re-authenticate before deleting your account.';
     default:
@@ -543,10 +551,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!db || !user || !user.emailVerified) return;
     const chatsPath = `users/${user.uid}/chats`;
     try {
-      const chatSnap = await getDocs(collection(db, chatsPath));
+      const chatSnap = await getDocs(
+        query(collection(db, chatsPath), where('userId', '==', user.uid))
+      );
       const refsToDelete: DocumentReference[] = [];
       for (const chatDoc of chatSnap.docs) {
-        const msgsSnap = await getDocs(collection(db, `${chatsPath}/${chatDoc.id}/messages`));
+        const msgsSnap = await getDocs(
+          query(
+            collection(db, `${chatsPath}/${chatDoc.id}/messages`),
+            where('userId', '==', user.uid)
+          )
+        );
         msgsSnap.docs.forEach((m) => refsToDelete.push(m.ref));
         refsToDelete.push(chatDoc.ref);
       }

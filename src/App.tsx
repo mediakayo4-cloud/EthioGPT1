@@ -5,9 +5,9 @@ import {
   doc,
   getDocs,
   onSnapshot,
-  orderBy,
   query,
   serverTimestamp,
+  where,
   writeBatch,
 } from 'firebase/firestore';
 import {
@@ -40,7 +40,12 @@ import { ProfileView } from './components/ProfileView';
 import { SettingsView } from './components/SettingsView';
 import { Sidebar } from './components/Sidebar';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import { db, handleFirestoreError, OperationType } from './firebase';
+import {
+  db,
+  isTransientFirestoreError,
+  logFirestoreError,
+  OperationType,
+} from './firebase';
 import { useVoiceAssistant } from './hooks/useVoiceAssistant';
 import { LANGUAGES, TRANSLATIONS } from './i18n/translations';
 import type {
@@ -94,8 +99,15 @@ function deriveTitle(text: string, attachments: ChatAttachment[]): string {
 }
 
 const EthioGPTWorkspace: React.FC = () => {
-  const { user, profile, isVerified, logout, syncUserPreferences, clearAllCloudChats } =
-    useAuth();
+  const {
+    user,
+    profile,
+    loading: authLoading,
+    isVerified,
+    logout,
+    syncUserPreferences,
+    clearAllCloudChats,
+  } = useAuth();
 
   const [language, setLanguage] = useState<LanguageCode>(() => {
     const saved = localStorage.getItem('ethiogpt_lang') as LanguageCode | null;
@@ -128,6 +140,11 @@ const EthioGPTWorkspace: React.FC = () => {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
 
   const [geminiConfigured, setGeminiConfigured] = useState<boolean | null>(null);
+  const [syncErrorNotice, setSyncErrorNotice] = useState<{
+    message: string;
+    canRetry: boolean;
+  } | null>(null);
+  const [syncReconnectTick, setSyncReconnectTick] = useState(0);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -182,10 +199,12 @@ const EthioGPTWorkspace: React.FC = () => {
 
   // Check API health on mount
   useEffect(() => {
-    fetch('/api/health')
-      .then((res) => res.json())
+    fetch('/api/health', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        setGeminiConfigured(Boolean(data.geminiConfigured));
+        if (data) {
+          setGeminiConfigured(Boolean(data.geminiConfigured));
+        }
       })
       .catch(() => {
         // Offline or server unreachable
@@ -210,9 +229,23 @@ const EthioGPTWorkspace: React.FC = () => {
     }
   }, [sessions, messagesByChat, user, isVerified, saveHistory]);
 
-  // Real-time Firestore sessions subscription for verified signed-in users
+  // Reconnect cloud listeners automatically when the browser regains connectivity
   useEffect(() => {
+    const handleOnline = () => {
+      if (syncErrorNotice?.canRetry) {
+        setSyncReconnectTick((t) => t + 1);
+      }
+    };
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [syncErrorNotice?.canRetry]);
+
+  // Real-time Firestore sessions subscription for verified signed-in users (with bounded retry)
+  useEffect(() => {
+    if (authLoading) return;
+
     if (!db || !user || !isVerified) {
+      setSyncErrorNotice(null);
       if (!user) {
         setSessions(loadLocalSessions());
         setMessagesByChat(loadLocalMessages());
@@ -220,67 +253,140 @@ const EthioGPTWorkspace: React.FC = () => {
       return;
     }
 
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    let retryTimer: number | null = null;
+    let attempt = 0;
+    const MAX_RETRIES = 4;
     const chatsPath = `users/${user.uid}/chats`;
-    const q = query(collection(db, chatsPath), orderBy('updatedAt', 'desc'));
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const loaded: ChatSession[] = snapshot.docs.map((d) => {
-          const data = d.data();
-          return {
-            id: data.id || d.id,
-            userId: data.userId,
-            title: data.title || 'Conversation',
-            language: (data.language as LanguageCode) || 'om',
-            messageCount: typeof data.messageCount === 'number' ? data.messageCount : 0,
-            lastMessagePreview: data.lastMessagePreview || '',
-            createdAt: data.createdAt?.toMillis?.() ?? Date.now(),
-            updatedAt: data.updatedAt?.toMillis?.() ?? Date.now(),
-          };
-        });
-        setSessions(loaded);
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, chatsPath);
-      }
-    );
 
-    return () => unsubscribe();
-  }, [user, isVerified]);
+    const attach = () => {
+      if (cancelled || !db) return;
+      const q = query(collection(db, chatsPath), where('userId', '==', user.uid));
 
-  // Real-time Firestore messages subscription for active chat
+      unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          attempt = 0;
+          setSyncErrorNotice(null);
+          const loaded: ChatSession[] = snapshot.docs
+            .map((d) => {
+              const data = d.data();
+              return {
+                id: data.id || d.id,
+                userId: data.userId,
+                title: data.title || 'Conversation',
+                language: (data.language as LanguageCode) || 'om',
+                messageCount: typeof data.messageCount === 'number' ? data.messageCount : 0,
+                lastMessagePreview: data.lastMessagePreview || '',
+                createdAt: data.createdAt?.toMillis?.() ?? Date.now(),
+                updatedAt: data.updatedAt?.toMillis?.() ?? Date.now(),
+              };
+            })
+            .sort((a, b) => b.updatedAt - a.updatedAt);
+          setSessions(loaded);
+        },
+        (error) => {
+          const info = logFirestoreError(error, OperationType.LIST, chatsPath);
+          unsubscribe?.();
+          unsubscribe = null;
+
+          if (cancelled) return;
+
+          if (isTransientFirestoreError(error) && attempt < MAX_RETRIES) {
+            const delayMs = Math.min(12000, 1500 * Math.pow(2, attempt));
+            attempt += 1;
+            setSyncErrorNotice({
+              message: `Cloud chat sync interrupted (${info.code || 'transport'}). Reconnecting...`,
+              canRetry: true,
+            });
+            retryTimer = window.setTimeout(attach, delayMs);
+            return;
+          }
+
+          setSyncErrorNotice({
+            message: isTransientFirestoreError(error)
+              ? 'Unable to maintain cloud chat connection right now. Saved local chats remain available.'
+              : 'Cloud chat history could not be synced for this account session. Please sign out and sign in again if this persists.',
+            canRetry: isTransientFirestoreError(error),
+          });
+        }
+      );
+    };
+
+    attach();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      unsubscribe?.();
+    };
+  }, [authLoading, user, isVerified, syncReconnectTick]);
+
+  // Real-time Firestore messages subscription for active chat (with bounded retry)
   useEffect(() => {
-    if (!db || !user || !isVerified || !activeChatId) return;
+    if (authLoading || !db || !user || !isVerified || !activeChatId) return;
 
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    let retryTimer: number | null = null;
+    let attempt = 0;
+    const MAX_RETRIES = 4;
     const msgsPath = `users/${user.uid}/chats/${activeChatId}/messages`;
-    const q = query(collection(db, msgsPath), orderBy('createdAt', 'asc'));
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const loaded: ChatMessage[] = snapshot.docs.map((d) => {
-          const data = d.data();
-          return {
-            id: data.id || d.id,
-            chatId: data.chatId || activeChatId,
-            role: data.role === 'assistant' ? 'assistant' : 'user',
-            content: data.content || '',
-            language: (data.language as LanguageCode) || 'om',
-            attachmentNames: Array.isArray(data.attachmentNames) ? data.attachmentNames : undefined,
-            createdAt: data.createdAt?.toMillis?.() ?? Date.now(),
-          };
-        });
-        setMessagesByChat((prev) => ({
-          ...prev,
-          [activeChatId]: loaded,
-        }));
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, msgsPath);
-      }
-    );
 
-    return () => unsubscribe();
-  }, [user, isVerified, activeChatId]);
+    const attach = () => {
+      if (cancelled || !db) return;
+      const q = query(collection(db, msgsPath), where('userId', '==', user.uid));
+
+      unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          attempt = 0;
+          const loaded: ChatMessage[] = snapshot.docs
+            .map((d): ChatMessage => {
+              const data = d.data();
+              return {
+                id: data.id || d.id,
+                chatId: data.chatId || activeChatId,
+                role: data.role === 'assistant' ? 'assistant' : 'user',
+                content: data.content || '',
+                language: (data.language as LanguageCode) || 'om',
+                attachmentNames: Array.isArray(data.attachmentNames)
+                  ? data.attachmentNames
+                  : undefined,
+                createdAt: data.createdAt?.toMillis?.() ?? Date.now(),
+              };
+            })
+            .sort((a, b) => a.createdAt - b.createdAt);
+          setMessagesByChat((prev) => ({
+            ...prev,
+            [activeChatId]: loaded,
+          }));
+        },
+        (error) => {
+          logFirestoreError(error, OperationType.LIST, msgsPath);
+          unsubscribe?.();
+          unsubscribe = null;
+
+          if (cancelled) return;
+
+          if (isTransientFirestoreError(error) && attempt < MAX_RETRIES) {
+            const delayMs = Math.min(12000, 1500 * Math.pow(2, attempt));
+            attempt += 1;
+            retryTimer = window.setTimeout(attach, delayMs);
+          }
+        }
+      );
+    };
+
+    attach();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      unsubscribe?.();
+    };
+  }, [authLoading, user, isVerified, activeChatId, syncReconnectTick]);
 
   const activeMessages = useMemo(
     () => (activeChatId ? messagesByChat[activeChatId] ?? [] : []),
@@ -341,13 +447,19 @@ const EthioGPTWorkspace: React.FC = () => {
       const chatPath = `users/${user.uid}/chats/${chatId}`;
       const msgsPath = `${chatPath}/messages`;
       try {
-        const snap = await getDocs(collection(db, msgsPath));
+        const snap = await getDocs(
+          query(collection(db, msgsPath), where('userId', '==', user.uid))
+        );
         const batch = writeBatch(db);
         snap.docs.forEach((d) => batch.delete(d.ref));
         batch.delete(doc(db, 'users', user.uid, 'chats', chatId));
         await batch.commit();
       } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, chatPath);
+        logFirestoreError(error, OperationType.DELETE, chatPath);
+        setSyncErrorNotice({
+          message: 'Could not delete cloud chat right now. Please try again.',
+          canRetry: isTransientFirestoreError(error),
+        });
       }
       return;
     }
@@ -459,7 +571,13 @@ const EthioGPTWorkspace: React.FC = () => {
     try {
       await batch.commit();
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/chats/${chatId}`);
+      logFirestoreError(error, OperationType.WRITE, `users/${user.uid}/chats/${chatId}`);
+      setSyncErrorNotice({
+        message: isTransientFirestoreError(error)
+          ? 'Could not sync this message to cloud history due to a temporary connection issue.'
+          : 'Unable to save this message to cloud history. Verify your session is signed in.',
+        canRetry: isTransientFirestoreError(error),
+      });
     }
   };
 
@@ -740,7 +858,13 @@ const EthioGPTWorkspace: React.FC = () => {
         try {
           await batch.commit();
         } catch (error) {
-          handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/chats/${activeChatId}`);
+          logFirestoreError(error, OperationType.WRITE, `users/${user.uid}/chats/${activeChatId}`);
+          setSyncErrorNotice({
+            message: isTransientFirestoreError(error)
+              ? 'Could not sync regenerated reply to cloud history due to a temporary connection issue.'
+              : 'Unable to save regenerated reply to cloud history.',
+            canRetry: isTransientFirestoreError(error),
+          });
         }
       }
     });
@@ -1056,6 +1180,30 @@ const EthioGPTWorkspace: React.FC = () => {
           </div>
         )}
 
+        {syncErrorNotice && (
+          <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-center gap-2.5 text-center">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            <span>{syncErrorNotice.message}</span>
+            {syncErrorNotice.canRetry && (
+              <button
+                type="button"
+                onClick={() => setSyncReconnectTick((t) => t + 1)}
+                className="rounded-lg border border-amber-600/30 bg-amber-600/15 px-2.5 py-0.5 text-[11px] font-semibold hover:bg-amber-600/25 transition-colors"
+              >
+                Reconnect
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setSyncErrorNotice(null)}
+              className="p-1 opacity-75 hover:opacity-100"
+              aria-label="Dismiss sync notice"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
         {voice.voiceNotice && activeView === 'chat' && (
           <div className="border-b border-stone-200 dark:border-emerald-950/70 bg-stone-100 dark:bg-[#131A16] px-4 py-2 text-xs text-stone-700 dark:text-stone-300 flex items-center justify-between gap-3">
             <span className="mx-auto">{voice.voiceNotice}</span>
@@ -1221,10 +1369,54 @@ const EthioGPTWorkspace: React.FC = () => {
   );
 };
 
+class AppErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; message: string }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, message: error?.message || 'Unexpected application error.' };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error('EthioGPT UI ErrorBoundary caught:', error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex min-h-dvh items-center justify-center bg-[#FAF9F5] dark:bg-[#0A0D0B] p-6 text-stone-900 dark:text-stone-100">
+          <div className="max-w-md w-full rounded-2xl border border-stone-200 dark:border-emerald-950/80 bg-white dark:bg-[#121815] p-6 text-center space-y-4 shadow-xl">
+            <AlertTriangle className="h-8 w-8 mx-auto text-amber-500" />
+            <h1 className="text-lg font-bold">Something went wrong</h1>
+            <p className="text-xs text-stone-600 dark:text-stone-400">
+              A temporary rendering or cloud connection error occurred. Your saved conversations are safe.
+            </p>
+            <button
+              type="button"
+              onClick={() => this.setState({ hasError: false, message: '' })}
+              className="min-h-[42px] px-4 rounded-xl bg-emerald-800 dark:bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-900 dark:hover:bg-emerald-500 transition-colors"
+            >
+              Reload EthioGPT
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   return (
-    <AuthProvider>
-      <EthioGPTWorkspace />
-    </AuthProvider>
+    <AppErrorBoundary>
+      <AuthProvider>
+        <EthioGPTWorkspace />
+      </AuthProvider>
+    </AppErrorBoundary>
   );
 }
